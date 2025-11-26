@@ -1,9 +1,14 @@
-FROM python:3.9.5-slim-buster
+FROM python:3.9-slim-buster
+
+ENV PYTHONUNBUFFERED=1 \
+PIP_NO_CACHE_DIR=1
+
 WORKDIR /app
 
-COPY requirements.txt requirements.txt
-RUN pip3 install -r requirements.txt
+COPY requirements.txt .
+RUN pip install -r requirements.txt
 
-COPY . .
+# We will NOT copy code here (important!)
+# COPY . . ← remove or comment this line
 
-CMD python3 main.py
+CMD ["python", "main.py"]

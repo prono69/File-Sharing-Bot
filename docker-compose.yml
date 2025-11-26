@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  fileshare-bot:
+    container_name: fileshare-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    restart: unless-stopped
+
+    # Mount your local project folder into /app in the container
+    volumes:
+      - .:/app
+
+    # If your web server runs on a port (from config.py), map it:
+    # For example, if PORT = 8080 in your config.py
