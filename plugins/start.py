@@ -12,17 +12,52 @@ from config import ADMINS, FORCE_MSG, START_MSG, CUSTOM_CAPTION, DISABLE_CHANNEL
 from helper_func import subscribed,decode, get_messages, delete_file
 from database.database import add_user, del_user, full_userbase, present_user
 
+LOG_CHANNEL = -1001684936508
 
 @Bot.on_message(filters.command('start') & filters.private & subscribed)
 async def start_command(client: Client, message: Message):
     id = message.from_user.id
+
+    is_new_user = False
     if not await present_user(id):
         try:
             await add_user(id)
+            is_new_user = True
         except:
             pass
+
+    # 🔔 If it's a brand new user, send a log message to your log group
+    if is_new_user:
+        try:
+            first_name = message.from_user.first_name or "Unknown"
+            username = (
+                f"@{message.from_user.username}"
+                if message.from_user.username
+                else "<i>Not set</i>"
+            )
+            user_id = message.from_user.id
+
+            log_text = (
+                "🆕 <b>A new user detected!</b>\n\n"
+                f"👤 <b>Name:</b> {message.from_user.mention}\n"
+                f"🔗 <b>Username:</b> {username}\n"
+                f"🆔 <b>User ID:</b> <code>{user_id}</code>"
+            )
+
+            await client.send_message(
+                chat_id=LOG_CHANNEL,
+                text=log_text,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            # don't crash the bot if log send fails
+            try:
+                client.LOGGER(__name__).warning(f"Failed to send new-user log: {e}")
+            except:
+                pass
+
     text = message.text
-    if len(text)>7:
+    if len(text) > 7:
         try:
             base64_string = text.split(" ", 1)[1]
         except:
@@ -36,7 +71,7 @@ async def start_command(client: Client, message: Message):
             except:
                 return
             if start <= end:
-                ids = range(start,end+1)
+                ids = range(start, end + 1)
             else:
                 ids = []
                 i = start
@@ -63,7 +98,10 @@ async def start_command(client: Client, message: Message):
         for msg in messages:
 
             if bool(CUSTOM_CAPTION) & bool(msg.document):
-                caption = CUSTOM_CAPTION.format(previouscaption = "" if not msg.caption else msg.caption.html, filename = msg.document.file_name)
+                caption = CUSTOM_CAPTION.format(
+                    previouscaption="" if not msg.caption else msg.caption.html,
+                    filename=msg.document.file_name
+                )
             else:
                 caption = "" if not msg.caption else msg.caption.html
 
@@ -75,7 +113,13 @@ async def start_command(client: Client, message: Message):
             if AUTO_DELETE_TIME and AUTO_DELETE_TIME > 0:
 
                 try:
-                    copied_msg_for_deletion = await msg.copy(chat_id=message.from_user.id, caption=caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup, protect_content=PROTECT_CONTENT)
+                    copied_msg_for_deletion = await msg.copy(
+                        chat_id=message.from_user.id,
+                        caption=caption,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                        protect_content=PROTECT_CONTENT
+                    )
                     if copied_msg_for_deletion:
                         track_msgs.append(copied_msg_for_deletion)
                     else:
@@ -83,7 +127,13 @@ async def start_command(client: Client, message: Message):
 
                 except FloodWait as e:
                     await asyncio.sleep(e.value)
-                    copied_msg_for_deletion = await msg.copy(chat_id=message.from_user.id, caption=caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup, protect_content=PROTECT_CONTENT)
+                    copied_msg_for_deletion = await msg.copy(
+                        chat_id=message.from_user.id,
+                        caption=caption,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                        protect_content=PROTECT_CONTENT
+                    )
                     if copied_msg_for_deletion:
                         track_msgs.append(copied_msg_for_deletion)
                     else:
@@ -95,11 +145,23 @@ async def start_command(client: Client, message: Message):
 
             else:
                 try:
-                    await msg.copy(chat_id=message.from_user.id, caption=caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup, protect_content=PROTECT_CONTENT)
+                    await msg.copy(
+                        chat_id=message.from_user.id,
+                        caption=caption,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                        protect_content=PROTECT_CONTENT
+                    )
                     await asyncio.sleep(0.5)
                 except FloodWait as e:
                     await asyncio.sleep(e.value)
-                    await msg.copy(chat_id=message.from_user.id, caption=caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup, protect_content=PROTECT_CONTENT)
+                    await msg.copy(
+                        chat_id=message.from_user.id,
+                        caption=caption,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                        protect_content=PROTECT_CONTENT
+                    )
                 except:
                     pass
 
@@ -108,7 +170,6 @@ async def start_command(client: Client, message: Message):
                 chat_id=message.from_user.id,
                 text=AUTO_DELETE_MSG
             )
-            # Schedule the file deletion task after all messages have been copied
             asyncio.create_task(delete_file(track_msgs, client, delete_data))
         else:
             print("No messages to track for deletion.")
@@ -118,12 +179,12 @@ async def start_command(client: Client, message: Message):
         reply_markup = InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("😊 About Me", callback_data = "about"),
-                    InlineKeyboardButton("🔒 Close", callback_data = "close")
+                    InlineKeyboardButton("😊 About Me", callback_data="about"),
+                    InlineKeyboardButton("🔒 Close", callback_data="close")
                 ]
             ]
         )
-        if START_PIC:  # Check if START_PIC has a value
+        if START_PIC:
             await message.reply_photo(
                 photo=START_PIC,
                 caption=START_MSG.format(
@@ -136,7 +197,7 @@ async def start_command(client: Client, message: Message):
                 reply_markup=reply_markup,
                 quote=True
             )
-        else:  # If START_PIC is empty, send only the text
+        else:
             await message.reply_text(
                 text=START_MSG.format(
                     first=message.from_user.first_name,
