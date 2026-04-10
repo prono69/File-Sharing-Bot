@@ -119,7 +119,7 @@ async def start_command(client: Client, message: Message):
         if len(argument) >= 3 and argument[1] == "album":
             try:
                 raw_ids = argument[2].split("_")
-                ids = [int(int(x) / abs(client.db_channel.id)) for x in raw_ids]
+                ids = [int(x) for x in raw_ids]
             except:
                 return
 

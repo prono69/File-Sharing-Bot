@@ -146,9 +146,13 @@ async def get_album_message_ids(client, chat_id, media_group_id, known_msg_id):
 
 
 async def encode_album(client, msg_ids: list) -> str:
-    """Encode a list of message IDs into a single album start parameter."""
-    db_id = abs(client.db_channel.id)
-    encoded_ids = "_".join(str(mid * db_id) for mid in msg_ids)
+    """
+    Encode a list of raw message IDs into a single album start parameter.
+    We store raw IDs (not multiplied) to keep the base64 short enough
+    for Telegram's 64-character start parameter limit.
+    Format: get-album-ID1_ID2_ID3_...
+    """
+    encoded_ids = "_".join(str(mid) for mid in msg_ids)
     return await encode(f"get-album-{encoded_ids}")
 
 
