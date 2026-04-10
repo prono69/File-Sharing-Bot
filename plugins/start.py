@@ -118,8 +118,9 @@ async def start_command(client: Client, message: Message):
         # ── ALBUM link: "get-album-ID1_ID2_ID3" ──
         if len(argument) >= 3 and argument[1] == "album":
             try:
-                raw_ids = argument[2].split("_")
-                ids = [int(x) for x in raw_ids]
+                first_id = int(argument[2])
+                count = int(argument[3])
+                ids = list(range(first_id, first_id + count))
             except:
                 return
 
