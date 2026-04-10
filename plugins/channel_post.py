@@ -31,16 +31,13 @@ async def _process_album(client: Client, media_group_id: str):
 
     reply_text = await first_msg.reply_text("Please Wait...!", quote=True)
     try:
-        forwarded = await client.forward_messages(
-            chat_id=client.db_channel.id,
-            from_chat_id=first_msg.chat.id,
-            message_ids=[m.id for m in msgs],
-            disable_notification=True
-        )
-        if not isinstance(forwarded, list):
-            forwarded = [forwarded]
-        forwarded = sorted(forwarded, key=lambda m: m.id)
-        fwd_ids = [m.id for m in forwarded]
+        # Copy each album message to DB channel (no forward tag)
+        copied_msgs = []
+        for m in msgs:
+            copied = await m.copy(chat_id=client.db_channel.id, disable_notification=True)
+            copied_msgs.append(copied)
+        copied_msgs = sorted(copied_msgs, key=lambda m: m.id)
+        fwd_ids = [m.id for m in copied_msgs]
 
         base64_string = await encode_album(client, fwd_ids)
         link = f"https://t.me/{client.username}?start={base64_string}"

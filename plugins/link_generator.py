@@ -46,16 +46,13 @@ async def _process_album(client: Client, media_group_id: str):
     first_msg = msgs[0]
 
     try:
-        # Forward all album messages to DB channel in one call
-        forwarded = await client.forward_messages(
-            chat_id=client.db_channel.id,
-            from_chat_id=first_msg.chat.id,
-            message_ids=[m.id for m in msgs]
-        )
-        if not isinstance(forwarded, list):
-            forwarded = [forwarded]
-        forwarded = sorted(forwarded, key=lambda m: m.id)
-        fwd_ids = [m.id for m in forwarded]
+        # Copy each album message to DB channel (no forward tag)
+        copied_msgs = []
+        for m in msgs:
+            copied = await m.copy(chat_id=client.db_channel.id, disable_notification=True)
+            copied_msgs.append(copied)
+        copied_msgs = sorted(copied_msgs, key=lambda m: m.id)
+        fwd_ids = [m.id for m in copied_msgs]
 
         base64_string = await encode_album(client, fwd_ids)
         link = f"https://t.me/{client.username}?start={base64_string}"
@@ -144,12 +141,7 @@ async def link_generator(client: Client, message: Message):
                 )
                 return
             try:
-                forwarded = await client.forward_messages(
-                    chat_id=client.db_channel.id,
-                    from_chat_id=target.chat.id,
-                    message_ids=target.id
-                )
-                fmsg = forwarded[0] if isinstance(forwarded, list) else forwarded
+                fmsg = await target.copy(chat_id=client.db_channel.id)
                 base64_string = await encode(f"get-{fmsg.id * abs(client.db_channel.id)}")
                 link = f"https://t.me/{client.username}?start={base64_string}"
                 await message.reply_text(
