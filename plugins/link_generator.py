@@ -46,11 +46,8 @@ async def _process_album(client: Client, media_group_id: str):
     first_msg = msgs[0]
 
     try:
-        # Copy each album message to DB channel (no forward tag)
-        copied_msgs = []
-        for m in msgs:
-            copied = await m.copy(chat_id=client.db_channel.id, disable_notification=True)
-            copied_msgs.append(copied)
+        # Copy entire media group to DB channel — no forward tag, album grouping preserved
+        copied_msgs = await first_msg.copy_media_group(chat_id=client.db_channel.id)
         copied_msgs = sorted(copied_msgs, key=lambda m: m.id)
         fwd_ids = [m.id for m in copied_msgs]
 
