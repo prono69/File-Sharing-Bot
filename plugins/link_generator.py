@@ -1,23 +1,19 @@
 #(©)Codexbotz - updated
 import re
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import FloodWait
 from bot import Bot
 from config import ADMINS
-from helper_func import encode, get_message_id
+from helper_func import encode, get_message_id, get_album_message_ids, encode_album
 
 # helper: try to extract last integer from a t.me link (message id)
 def _extract_msg_id_from_link(link: str):
-    # common t.me link forms:
-    # https://t.me/username/123
-    # https://t.me/c/ - private: https://t.me/c/-1001234567/89
-    # or just numeric string
     if not link:
         return None
-    # if the whole argument is numeric, return it direct
     if link.isdigit():
         return int(link)
-    # find all numbers and return the last one (message id usually the last)
     nums = re.findall(r'-?\d+', link)
     if not nums:
         return None
@@ -30,88 +26,151 @@ def _extract_msg_id_from_link(link: str):
 def _share_markup(link: str):
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔁 Share URL", url=f'https://telegram.me/share/url?url={link}')]])
 
-# New handler: accept media sent directly to bot (private) and generate link
-@Bot.on_message(filters.private & filters.user(ADMINS) & (filters.document | filters.video | filters.photo | filters.audio | filters.voice | filters.sticker))
-async def media_genlink(client: Client, message: Message):
-    """
-    If admin sends any media directly, forward it to DB channel, get the new message id,
-    build the encoded start parameter and reply with the link.
-    """
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ALBUM COLLECTION HELPER
+# Pyrogram fires one update per photo/video in an album.
+# We buffer them for a short window then process together.
+# ──────────────────────────────────────────────────────────────────────────────
+_album_buffer: dict = {}   # media_group_id -> {"msgs": [...], "task": asyncio.Task}
+_ALBUM_WAIT = 1.0          # seconds to wait for remaining album parts
+
+
+async def _process_album(client: Client, media_group_id: str):
+    """Called after the buffer window closes. Generates a link for the whole album."""
+    await asyncio.sleep(_ALBUM_WAIT)
+    data = _album_buffer.pop(media_group_id, None)
+    if not data:
+        return
+    msgs = sorted(data["msgs"], key=lambda m: m.id)
+    first_msg = msgs[0]
+
     try:
-        # forward the single media message to db_channel to keep DB consistent
+        # Forward all album messages to DB channel in one call
+        forwarded = await client.forward_messages(
+            chat_id=client.db_channel.id,
+            from_chat_id=first_msg.chat.id,
+            message_ids=[m.id for m in msgs]
+        )
+        if not isinstance(forwarded, list):
+            forwarded = [forwarded]
+        forwarded = sorted(forwarded, key=lambda m: m.id)
+        fwd_ids = [m.id for m in forwarded]
+
+        base64_string = await encode_album(client, fwd_ids)
+        link = f"https://t.me/{client.username}?start={base64_string}"
+        await first_msg.reply_text(
+            f"<b>Here is your album link</b> ({len(fwd_ids)} files)\n\n{link}",
+            quote=True,
+            reply_markup=_share_markup(link)
+        )
+    except Exception as e:
+        await first_msg.reply_text(f"❌ Error generating album link: `{e}`", quote=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HANDLER: Admin sends media directly (single file OR album)
+# ──────────────────────────────────────────────────────────────────────────────
+@Bot.on_message(filters.private & filters.user(ADMINS) & (
+    filters.document | filters.video | filters.photo |
+    filters.audio | filters.voice | filters.sticker
+))
+async def media_genlink(client: Client, message: Message):
+    # ── Album case ──
+    if message.media_group_id:
+        mgid = message.media_group_id
+        if mgid not in _album_buffer:
+            _album_buffer[mgid] = {"msgs": [], "task": None}
+        _album_buffer[mgid]["msgs"].append(message)
+        # Cancel old timer, restart it
+        if _album_buffer[mgid]["task"]:
+            _album_buffer[mgid]["task"].cancel()
+        _album_buffer[mgid]["task"] = asyncio.create_task(
+            _process_album(client, mgid)
+        )
+        return  # wait for all parts to arrive
+
+    # ── Single file case ──
+    try:
         forwarded = await client.forward_messages(
             chat_id=client.db_channel.id,
             from_chat_id=message.chat.id,
-            message_ids=message.message_id
+            message_ids=message.id
         )
-        # forwarded can be a Message or list -- handle both
-        if isinstance(forwarded, list):
-            fmsg = forwarded[0]
-        else:
-            fmsg = forwarded
-
-        msg_id = fmsg.message_id
+        fmsg = forwarded[0] if isinstance(forwarded, list) else forwarded
+        msg_id = fmsg.id
         base64_string = await encode(f"get-{msg_id * abs(client.db_channel.id)}")
         link = f"https://t.me/{client.username}?start={base64_string}"
-        await message.reply_text(f"<b>Here is your link</b>\n\n{link}", quote=True, reply_markup=_share_markup(link))
+        await message.reply_text(
+            f"<b>Here is your link</b>\n\n{link}",
+            quote=True,
+            reply_markup=_share_markup(link)
+        )
     except Exception as e:
         await message.reply_text(f"❌ Error generating link: `{e}`", quote=True)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# HANDLER: /genlink
+# ──────────────────────────────────────────────────────────────────────────────
 @Bot.on_message(filters.private & filters.user(ADMINS) & filters.command('genlink'))
 async def link_generator(client: Client, message: Message):
-    """
-    /genlink
-    /genlink <t.me/link_or_msgid>
-    Also works if the admin replies/forwards a message (or forwarded message from DB channel).
-    """
-    # If the command has an argument, try to parse it as a link/msg id
+    # ── Argument path: /genlink <t.me link or msg id> ──
     cmd_parts = message.text.split(maxsplit=1)
     if len(cmd_parts) > 1:
         arg = cmd_parts[1].strip()
-        # try parse integer msg id from link
         parsed_id = _extract_msg_id_from_link(arg)
         if parsed_id:
-            # if it's a message id from the DB channel, we can try use get_message_id (if needed),
-            # but following original behavior: compute encoded token using msg_id * abs(db_channel.id)
-            base64_string = await encode(f"get-{parsed_id * abs(client.db_channel.id)}")
-            link = f"https://t.me/{client.username}?start={base64_string}"
-            await message.reply_text(f"<b>Here is your link</b>\n\n{link}", quote=True, reply_markup=_share_markup(link))
-            return
-        # if not parseable, fall through to interactive / reply handling
+            # Fetch the message from DB channel and check for album
+            link = await _genlink_from_db_msg_id(client, message, parsed_id)
+            if link:
+                return
+        # fall through to interactive
 
-    # If user replied to a message (or forwarded one), try to extract msg id using get_message_id
+    # ── Reply path ──
     target = message.reply_to_message
     if target:
         msg_id = await get_message_id(client, target)
         if msg_id:
-            base64_string = await encode(f"get-{msg_id * abs(client.db_channel.id)}")
-            link = f"https://t.me/{client.username}?start={base64_string}"
-            await message.reply_text(f"<b>Here is your link</b>\n\n{link}", quote=True, reply_markup=_share_markup(link))
-            return
-        # if get_message_id failed and the reply contains media, forward it to DB channel and generate
+            link = await _genlink_from_db_msg_id(client, message, msg_id)
+            if link:
+                return
+        # reply contains media not yet in DB — forward it
         if target.media:
+            if target.media_group_id:
+                await message.reply_text(
+                    "⚠️ To generate an album link, please send the album files directly to me instead of replying.",
+                    quote=True
+                )
+                return
             try:
                 forwarded = await client.forward_messages(
                     chat_id=client.db_channel.id,
                     from_chat_id=target.chat.id,
-                    message_ids=target.message_id
+                    message_ids=target.id
                 )
                 fmsg = forwarded[0] if isinstance(forwarded, list) else forwarded
-                msg_id = fmsg.message_id
-                base64_string = await encode(f"get-{msg_id * abs(client.db_channel.id)}")
+                base64_string = await encode(f"get-{fmsg.id * abs(client.db_channel.id)}")
                 link = f"https://t.me/{client.username}?start={base64_string}"
-                await message.reply_text(f"<b>Here is your link</b>\n\n{link}", quote=True, reply_markup=_share_markup(link))
+                await message.reply_text(
+                    f"<b>Here is your link</b>\n\n{link}",
+                    quote=True,
+                    reply_markup=_share_markup(link)
+                )
                 return
             except Exception as e:
                 await message.reply_text(f"❌ Error forwarding media to DB channel: `{e}`", quote=True)
                 return
 
-    # fallback: interactive ask (existing behavior)
+    # ── Interactive fallback ──
     while True:
         try:
             channel_message = await client.ask(
-                text="Forward Message from the DB Channel (with Quotes)..\nor Send the DB Channel Post link",
+                text=(
+                    "Forward a message from the DB Channel (with Quotes)..\n"
+                    "or Send the DB Channel Post link\n\n"
+                    "💡 If it's an album post, send its t.me link and I'll fetch the full album."
+                ),
                 chat_id=message.from_user.id,
                 filters=(filters.forwarded | (filters.text & ~filters.forwarded)),
                 timeout=60
@@ -120,23 +179,61 @@ async def link_generator(client: Client, message: Message):
             return
         msg_id = await get_message_id(client, channel_message)
         if msg_id:
-            base64_string = await encode(f"get-{msg_id * abs(client.db_channel.id)}")
-            link = f"https://t.me/{client.username}?start={base64_string}"
-            reply_markup = _share_markup(link)
-            await channel_message.reply_text(f"<b>Here is your link</b>\n\n{link}", quote=True, reply_markup=reply_markup)
+            await _genlink_from_db_msg_id(client, channel_message, msg_id, reply_target=channel_message)
             return
         else:
-            await channel_message.reply("❌ Error\n\nthis Forwarded Post is not from my DB Channel or this Link is not taken from DB Channel", quote=True)
+            await channel_message.reply(
+                "❌ Error\n\nThis forwarded post is not from my DB Channel or this link is not from the DB Channel",
+                quote=True
+            )
             continue
 
 
+async def _genlink_from_db_msg_id(client: Client, trigger_msg: Message, msg_id: int, reply_target=None):
+    """
+    Fetch msg_id from DB channel. If it's part of an album, collect all album IDs
+    and return an album link. Otherwise return a single-file link.
+    reply_target: the message to reply to (defaults to trigger_msg).
+    """
+    reply_to = reply_target or trigger_msg
+    try:
+        db_msg = await client.get_messages(
+            chat_id=client.db_channel.id,
+            message_ids=msg_id
+        )
+    except Exception as e:
+        await reply_to.reply_text(f"❌ Could not fetch message from DB channel: `{e}`", quote=True)
+        return None
+
+    if db_msg and not db_msg.empty and db_msg.media_group_id:
+        # It's part of an album — collect all IDs
+        album_ids = await get_album_message_ids(
+            client, client.db_channel.id, db_msg.media_group_id, msg_id
+        )
+        base64_string = await encode_album(client, album_ids)
+        link = f"https://t.me/{client.username}?start={base64_string}"
+        await reply_to.reply_text(
+            f"<b>Here is your album link</b> ({len(album_ids)} files)\n\n{link}",
+            quote=True,
+            reply_markup=_share_markup(link)
+        )
+    else:
+        # Single message
+        base64_string = await encode(f"get-{msg_id * abs(client.db_channel.id)}")
+        link = f"https://t.me/{client.username}?start={base64_string}"
+        await reply_to.reply_text(
+            f"<b>Here is your link</b>\n\n{link}",
+            quote=True,
+            reply_markup=_share_markup(link)
+        )
+    return link
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HANDLER: /batch  (unchanged — range based, not album aware)
+# ──────────────────────────────────────────────────────────────────────────────
 @Bot.on_message(filters.private & filters.user(ADMINS) & filters.command('batch'))
 async def batch(client: Client, message: Message):
-    """
-    /batch                 -> interactive (existing ask flow)
-    /batch <start> <end>   -> parse message links or numeric ids and generate link
-    """
-    # Try the quick-args path first
     cmd_parts = message.text.split(maxsplit=2)
     if len(cmd_parts) >= 3:
         start_arg = cmd_parts[1].strip()
@@ -147,12 +244,13 @@ async def batch(client: Client, message: Message):
             string = f"get-{start_id * abs(client.db_channel.id)}-{end_id * abs(client.db_channel.id)}"
             base64_string = await encode(string)
             link = f"https://t.me/{client.username}?start={base64_string}"
-            reply_markup = _share_markup(link)
-            await message.reply_text(f"<b>Here is your link</b>\n\n{link}", quote=True, reply_markup=reply_markup)
+            await message.reply_text(
+                f"<b>Here is your link</b>\n\n{link}",
+                quote=True,
+                reply_markup=_share_markup(link)
+            )
             return
-        # if parsing failed, fall back to interactive below
 
-    # Interactive: ask for first and second message (existing behavior)
     while True:
         try:
             first_message = await client.ask(
@@ -164,7 +262,6 @@ async def batch(client: Client, message: Message):
         except:
             return
         f_msg_id = await get_message_id(client, first_message)
-        # if user provided a direct link instead of forwarding, try to parse numeric id from text
         if not f_msg_id and first_message.text:
             parsed = _extract_msg_id_from_link(first_message.text.strip())
             if parsed:
@@ -172,7 +269,10 @@ async def batch(client: Client, message: Message):
         if f_msg_id:
             break
         else:
-            await first_message.reply("❌ Error\n\nthis Forwarded Post is not from my DB Channel or this Link is taken from DB Channel", quote=True)
+            await first_message.reply(
+                "❌ Error\n\nThis forwarded post is not from my DB Channel or this link is taken from DB Channel",
+                quote=True
+            )
             continue
 
     while True:
@@ -193,11 +293,17 @@ async def batch(client: Client, message: Message):
         if s_msg_id:
             break
         else:
-            await second_message.reply("❌ Error\n\nthis Forwarded Post is not from my DB Channel or this Link is taken from DB Channel", quote=True)
+            await second_message.reply(
+                "❌ Error\n\nThis forwarded post is not from my DB Channel or this link is taken from DB Channel",
+                quote=True
+            )
             continue
 
     string = f"get-{f_msg_id * abs(client.db_channel.id)}-{s_msg_id * abs(client.db_channel.id)}"
     base64_string = await encode(string)
     link = f"https://t.me/{client.username}?start={base64_string}"
-    reply_markup = _share_markup(link)
-    await second_message.reply_text(f"<b>Here is your link</b>\n\n{link}", quote=True, reply_markup=reply_markup)
+    await second_message.reply_text(
+        f"<b>Here is your link</b>\n\n{link}",
+        quote=True,
+        reply_markup=_share_markup(link)
+    )

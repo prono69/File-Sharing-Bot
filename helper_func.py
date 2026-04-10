@@ -118,4 +118,38 @@ async def delete_file(messages, client, process):
     await process.edit_text(AUTO_DEL_SUCCESS_MSG)
 
 
+async def get_album_message_ids(client, chat_id, media_group_id, known_msg_id):
+    """
+    Given a known message id that belongs to a media group, fetch all message IDs
+    in that album from the DB channel.
+    Pyrogram doesn't have a direct API for this, so we scan nearby messages.
+    """
+    album_ids = []
+    # Scan a window of messages around the known one to find all with same media_group_id
+    # We check a range of +/- 20 messages which is more than enough for any album
+    scan_range = list(range(max(1, known_msg_id - 20), known_msg_id + 21))
+    try:
+        msgs = await client.get_messages(chat_id=chat_id, message_ids=scan_range)
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        msgs = await client.get_messages(chat_id=chat_id, message_ids=scan_range)
+    except Exception as e:
+        logging.warning(f"get_album_message_ids error: {e}")
+        return [known_msg_id]
+
+    for m in msgs:
+        if m and not m.empty and m.media_group_id == media_group_id:
+            album_ids.append(m.id)
+
+    album_ids = sorted(set(album_ids))
+    return album_ids if album_ids else [known_msg_id]
+
+
+async def encode_album(client, msg_ids: list) -> str:
+    """Encode a list of message IDs into a single album start parameter."""
+    db_id = abs(client.db_channel.id)
+    encoded_ids = "_".join(str(mid * db_id) for mid in msg_ids)
+    return await encode(f"get-album-{encoded_ids}")
+
+
 subscribed = filters.create(is_subscribed)
