@@ -1,6 +1,6 @@
 # --- For-Bot-Working --------- #
-pyrofork
-tgcrypto-pyrofork
+kurigram
+pytgcrypto
 python-dotenv
 # --- For-Database ------------ #
 pymongo
