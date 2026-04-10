@@ -133,13 +133,10 @@ async def start_command(client: Client, message: Message):
 
             track_msgs = []
 
-            if AUTO_DELETE_TIME and AUTO_DELETE_TIME > 0:
-                sent = await _send_album(client, message.from_user.id, messages_list, protect_content=PROTECT_CONTENT)
-                track_msgs.extend(sent)
-            else:
-                await _send_album(client, message.from_user.id, messages_list, protect_content=PROTECT_CONTENT)
+            sent = await _send_album(client, message.from_user.id, messages_list, protect_content=PROTECT_CONTENT)
+            track_msgs.extend(sent)
 
-            if track_msgs:
+            if AUTO_DELETE_TIME and AUTO_DELETE_TIME > 0 and track_msgs:
                 delete_data = await client.send_message(
                     chat_id=message.from_user.id,
                     text=AUTO_DELETE_MSG
